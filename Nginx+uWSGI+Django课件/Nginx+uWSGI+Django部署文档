@@ -1,0 +1,181 @@
+1、上传项目至目标服务器并安装项目所需的模块
+包整项目能正常通过runserver启动并且检查没有问题
+
+2、安装uwsgi 并使用uWSGI启动这个服务
+
+执行这条命令的时候：一定要在这个项目目录中~ 
+uwsgi --http 192.168.31.123:80 --file teacher/wsgi.py --static-map=/static=static
+
+3、使用配置文件启动uWSGI[ini]
+    [uwsgi]
+    # 项目目录
+    chdir=/opt/project_teacher/teacher/
+    # 启动uwsgi的用户名和用户组
+    uid=root
+    gid=root
+    # 指定项目的application
+    module=teacher.wsgi:application
+    # 指定sock的文件路径
+    socket=/opt/project_teacher/script/uwsgi.sock
+    # 启用主进程
+    master=true
+    # 进程个数
+    workers=5
+    pidfile=/opt/project_teacher/script/uwsgi.pid
+    # 自动移除unix Socket和pid文件当服务停止的时候
+    vacuum=true
+    # 序列化接受的内容，如果可能的话
+    thunder-lock=true
+    # 启用线程
+    enable-threads=true
+    # 设置自中断时间
+    harakiri=30
+    # 设置缓冲
+    post-buffering=4096
+    # 设置日志目录
+    daemonize=/opt/project_teacher/script/uwsgi.log
+4、安装Nginx
+vim /etc/yum.repos.d/nginx.repo
+    [nginx]
+    name=nginx repo
+    # 下面这行centos根据你自己的操作系统修改比如：OS/rehel
+    # 6是你Linux系统的版本，可以通过URL查看路径是否正确
+    baseurl=http://nginx.org/packages/centos/6/$basearch/
+    gpgcheck=0
+    enabled=1
+# 安装nginx
+yum -y install nginx
+# 添加配置文件
+vim teacher.conf # 这个名字随便起，最好是和项目一个名字
+server {
+		listen 80;
+		server_name 192.168.81.128 ;
+		access_log  /var/log/nginx/access.log  main;
+		charset  utf-8;
+		gzip on;
+		gzip_types text/plain application/x-javascript text/css text/javascript application/x-httpd-php application/json text/json image/jpeg image/gif image/png application/octet-stream;
+
+		error_page  404           /404.html;
+		error_page   500 502 503 504  /50x.html;
+		# 指定项目路径uwsgi
+		location / {
+			include uwsgi_params;
+			uwsgi_connect_timeout 30;
+			uwsgi_pass unix:/uwsgi-teacher/script/uwsgi.sock;
+		}
+		# 指定静态文件路径
+		location /static/ {
+			alias  /uwsgi-teacher/teacher/static/;
+			index  index.html index.htm;
+		}
+
+}
+
+
+5、添加默认静态文件目录
+vim ../teacher/teacher/settings.py
+STATIC_ROOT = os.path.join(BASE_DIR, "static_all")
+
+Nginx配置静态文件简单修改
+
+6、添加管理脚本
+cd /etc/init.d/
+vim manage_teacher
+出的
+# chkconfig: 345 85 15
+# 上面一行注释:哪些Linux级别需要启动manage_teacher(3,4,5)；启动序号(85)；关闭序号(15)。
+# description: manage script is the teacher daemon.
+# Author: luotianshuai
+# 指定项目目录
+PROJECT_DIR="/opt/project_teacher/teacher"
+# 指定脚本目录在哪里
+SCRIPTS_DIR="/opt/project_teacher/script"
+# 描述
+DESC="teacher daemon"
+# 名称
+NAME="teacher"
+# 脚本名称
+SCRIPT_FILENAME="manage_teacher.sh"
+# 脚本目录名称
+SCRIPTNAME=`pwd`/$SCRIPT_FILENAME
+
+# PID
+PID="uwsgi.pid"
+
+# 启动函数
+d_start(){
+# 进入到项目目录
+cd $SCRIPTS_DIR
+# 判断这个PID是否存在
+if [ ! -f $PID ];then
+echo -e "\n\033[34m$NAME项目启动中........\033[0m"
+# 如果不存在执行
+uwsgi --ini uwsgi.ini
+killall nginx
+/etc/init.d/nginx start
+# 自动收集静态文件
+cd $PROJECT_DIR && python3 manage.py collectstatic --noinput
+echo -e "\n\033[32m$NAME 项目启动完成........\033[0m"
+exit 0
+fi
+echo -e "\n\033[33m$NAME 项目已启动请勿重复启动\033[0m"
+}
+# 关闭函数
+# 关闭项目
+d_stop(){
+# 进入脚本目录
+cd $SCRIPTS_DIR
+# 判断这个pid文件是否存在
+if [ ! -f "uwsgi.pid" ];then
+# 这个项目已经关闭了
+echo -e "\n\033[33m$NAME 项目已经关闭了请先启动\033[0m"
+fi
+echo -e "\n\033[34m$NAME 项目关闭中........\033[0m"
+echo -e "\nStop $DESC: $NAME"
+# 如果没有关闭
+uwsgi --stop uwsgi.pid
+# 是否停掉Nginx根据实际需要来操作~~！因为Nginx有对静态文件缓存［注意］
+killall nginx
+/etc/init.d/nginx start
+echo -e "\n\033[32m$NAME 项目关闭完成........\033[0m"
+}
+
+d_restart(){
+d_stop
+sleep 1
+d_start
+}
+
+case "$1" in
+start)
+echo -e "\nstarting $DESC: $NAME"
+d_start
+;;
+stop)
+echo -e "\nStop $DESC: $NAME"
+d_stop
+;;
+restart)
+echo -e "\nRestart $DESC: $NAME"
+d_restart
+;;
+*)
+echo "Usage: $SCRIPTNAME {start|stop|restart}" >&2
+exit 3
+;;
+esac
+
+
+# 添加服务
+chkconfig --add manage_teacher
+# 开机启动
+[root@localhost init.d]# chkconfig manage_teacher on 
+# 查看启动级别
+[root@localhost init.d]# chkconfig --list manage_teacher 
+manage_teacher 	0:off	1:off	2:on	3:on	4:on	5:on	6:off
+
+# 然后就可以通过命令
+[root@localhost ~]# service manage_teacher start
+[root@localhost ~]# service manage_teacher stop
+[root@localhost ~]# service manage_teacher restart
+
